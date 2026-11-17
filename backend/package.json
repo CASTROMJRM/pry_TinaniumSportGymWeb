@@ -4,6 +4,8 @@
   "type": "module",
   "main": "index.js",
   "scripts": {
+    "test:mobile:postgres": "node --experimental-vm-modules --test --test-isolation=none tests/integration/exerciseVideoMigrationPostgres.test.js tests/integration/mobileBackendPostgres.test.js tests/integration/mobileCheckoutPostgres.test.js",
+    "test:exercise-video-migration:postgres": "node --experimental-vm-modules --test --test-isolation=none tests/integration/exerciseVideoMigrationPostgres.test.js",
     "test": "node --experimental-vm-modules --test --test-isolation=none tests/*.test.js",
     "test:access": "node --experimental-vm-modules --test --test-isolation=none tests/access*.test.js",
     "test:privacy": "node --experimental-vm-modules --test --test-isolation=none tests/privacy*.test.js",

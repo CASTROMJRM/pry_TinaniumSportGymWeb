@@ -1,11 +1,6 @@
 import { Op } from "sequelize";
-import { sequelize } from "../config/sequelize.js";
 import { Routine, RoutineExercise, User } from "../models/index.js";
-import {
-  uploadMediaBufferToCloudinary,
-  destroyCloudinaryImage,
-  destroyCloudinaryVideo,
-} from "../utils/cloudinaryUpload.js";
+import { saveTrainerRoutine, removeTrainerRoutine, changeExerciseVideo, transitionRoutine } from "../services/trainerRoutineMutationService.js";
 
 const allowedStatuses = [
   "draft",
@@ -44,61 +39,6 @@ const normalizeText = (value) => {
   return clean.length ? clean : null;
 };
 
-const toPositiveInteger = (value, fallback = 1) => {
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < 0) return fallback;
-  return parsed;
-};
-
-const detectVideoType = (url) => {
-  if (!url) return "none";
-
-  const value = String(url).toLowerCase();
-
-  if (value.includes("youtube.com") || value.includes("youtu.be")) {
-    return "youtube";
-  }
-
-  if (value.includes("drive.google.com")) {
-    return "drive";
-  }
-
-  return "external";
-};
-
-const parseExercises = (raw) => {
-  if (!raw) return [];
-
-  try {
-    const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
-
-    if (!Array.isArray(parsed)) return [];
-
-    return parsed
-      .map((exercise, index) => ({
-        name: normalizeText(exercise.name),
-        description: normalizeText(exercise.description),
-        dayNumber: toPositiveInteger(exercise.dayNumber, 1),
-        sets:
-          exercise.sets === "" || exercise.sets === null || exercise.sets === undefined
-            ? null
-            : toPositiveInteger(exercise.sets, 0),
-        reps: normalizeText(exercise.reps),
-        restSeconds:
-          exercise.restSeconds === "" ||
-          exercise.restSeconds === null ||
-          exercise.restSeconds === undefined
-            ? null
-            : toPositiveInteger(exercise.restSeconds, 0),
-        notes: normalizeText(exercise.notes),
-        order: toPositiveInteger(exercise.order, index),
-      }))
-      .filter((exercise) => exercise.name);
-  } catch {
-    return [];
-  }
-};
-
 const serializeRoutine = (routine) => {
   const json = routine?.toJSON ? routine.toJSON() : routine;
 
@@ -112,7 +52,8 @@ const serializeRoutine = (routine) => {
 
   return {
     ...json,
-    exercises,
+    exercises: exercises.map((exercise) => ({ ...exercise,
+      videoType: exercise.videoType || "none", hasVideo: Boolean(exercise.videoUrl) })),
     trainerEmail: json.trainer?.email ?? null,
   };
 };
@@ -138,45 +79,6 @@ const findTrainerRoutine = async (req) => {
     },
     include: routineInclude,
   });
-};
-
-const handleRoutineMedia = async (req, currentRoutine = null) => {
-  const files = req.files || {};
-  const imageFile = Array.isArray(files.image) ? files.image[0] : null;
-  const videoFile = Array.isArray(files.video) ? files.video[0] : null;
-
-  const output = {};
-
-  if (imageFile?.buffer) {
-    const uploadedImage = await uploadMediaBufferToCloudinary(imageFile.buffer, {
-      folder: "titanium/routines/images",
-      resourceType: "image",
-    });
-
-    output.imageUrl = uploadedImage.secure_url;
-    output.imagePublicId = uploadedImage.public_id;
-
-    if (currentRoutine?.imagePublicId) {
-      await destroyCloudinaryImage(currentRoutine.imagePublicId);
-    }
-  }
-
-  if (videoFile?.buffer) {
-    const uploadedVideo = await uploadMediaBufferToCloudinary(videoFile.buffer, {
-      folder: "titanium/routines/videos",
-      resourceType: "video",
-    });
-
-    output.videoUrl = uploadedVideo.secure_url;
-    output.videoPublicId = uploadedVideo.public_id;
-    output.videoType = "upload";
-
-    if (currentRoutine?.videoPublicId) {
-      await destroyCloudinaryVideo(currentRoutine.videoPublicId);
-    }
-  }
-
-  return output;
 };
 
 export const listTrainerRoutines = async (req, res) => {
@@ -247,323 +149,62 @@ export const getTrainerRoutineById = async (req, res) => {
   }
 };
 
-export const createTrainerRoutine = async (req, res) => {
+function mutationError(res, error) {
+  if (!error.statusCode) console.error("Routine mutation failed", { name: error.name });
+  return res.status(error.statusCode || 500).json({ error: error.statusCode ? error.message : "No se pudo guardar la rutina" });
+}
+
+const saveRoutine = (creating) => async (req, res) => {
   if (!ensureTrainer(req, res)) return;
-
-  const transaction = await sequelize.transaction();
-
   try {
-    const title = normalizeText(req.body.title);
-
-    if (!title) {
-      await transaction.rollback();
-      return res.status(400).json({ error: "El nombre de la rutina es obligatorio" });
-    }
-
-    const level = allowedLevels.includes(req.body.level)
-      ? req.body.level
-      : "principiante";
-
-    const category = allowedCategories.includes(req.body.category)
-      ? req.body.category
-      : "general";
-
-    const status = allowedStatuses.includes(req.body.status)
-      ? req.body.status
-      : "draft";
-
-    const media = await handleRoutineMedia(req);
-
-    const externalVideoUrl = normalizeText(req.body.videoUrl);
-
-    const routine = await Routine.create(
-      {
-        trainerId: getTrainerId(req),
-        title,
-        objective: normalizeText(req.body.objective),
-        description: normalizeText(req.body.description),
-        level,
-        category,
-        durationWeeks: toPositiveInteger(req.body.durationWeeks, 4),
-        daysPerWeek: toPositiveInteger(req.body.daysPerWeek, 3),
-        estimatedMinutes: toPositiveInteger(req.body.estimatedMinutes, 45),
-
-        imageUrl: media.imageUrl || null,
-        imagePublicId: media.imagePublicId || null,
-
-        videoUrl: media.videoUrl || externalVideoUrl || null,
-        videoPublicId: media.videoPublicId || null,
-        videoType: media.videoType || detectVideoType(externalVideoUrl),
-
-        status,
-      },
-      { transaction }
-    );
-
-    const exercises = parseExercises(req.body.exercises);
-
-    if (exercises.length) {
-      await RoutineExercise.bulkCreate(
-        exercises.map((exercise) => ({
-          ...exercise,
-          routineId: routine.id,
-        })),
-        { transaction }
-      );
-    }
-
-    await transaction.commit();
-
-    const fullRoutine = await Routine.findByPk(routine.id, {
-      include: routineInclude,
+    const routine = await saveTrainerRoutine({ routineId: creating ? undefined : req.params.id,
+      trainerId: getTrainerId(req), body: req.body, files: req.files });
+    return res.status(creating ? 201 : 200).json({
+      message: creating ? "Rutina creada correctamente" : "Rutina actualizada correctamente",
+      routine: serializeRoutine(routine),
     });
-
-    return res.status(201).json({
-      message: "Rutina creada correctamente",
-      routine: serializeRoutine(fullRoutine),
-    });
-  } catch (error) {
-    await transaction.rollback();
-    console.error("createTrainerRoutine error:", error);
-    return res.status(500).json({ error: "No se pudo crear la rutina" });
-  }
+  } catch (error) { return mutationError(res, error); }
 };
-
-export const updateTrainerRoutine = async (req, res) => {
-  if (!ensureTrainer(req, res)) return;
-
-  const transaction = await sequelize.transaction();
-
-  try {
-    const routine = await Routine.findOne({
-      where: {
-        id: req.params.id,
-        trainerId: getTrainerId(req),
-      },
-      transaction,
-    });
-
-    if (!routine) {
-      await transaction.rollback();
-      return res.status(404).json({ error: "Rutina no encontrada" });
-    }
-
-    const title = normalizeText(req.body.title);
-
-    if (!title) {
-      await transaction.rollback();
-      return res.status(400).json({ error: "El nombre de la rutina es obligatorio" });
-    }
-
-    const media = await handleRoutineMedia(req, routine);
-
-    const externalVideoUrl = normalizeText(req.body.videoUrl);
-
-    let nextVideoUrl = routine.videoUrl;
-    let nextVideoPublicId = routine.videoPublicId;
-    let nextVideoType = routine.videoType;
-
-    if (media.videoUrl) {
-      nextVideoUrl = media.videoUrl;
-      nextVideoPublicId = media.videoPublicId;
-      nextVideoType = "upload";
-    } else if (externalVideoUrl) {
-      if (routine.videoPublicId) {
-        await destroyCloudinaryVideo(routine.videoPublicId);
-      }
-
-      nextVideoUrl = externalVideoUrl;
-      nextVideoPublicId = null;
-      nextVideoType = detectVideoType(externalVideoUrl);
-    } else if (req.body.removeVideo === "true") {
-      if (routine.videoPublicId) {
-        await destroyCloudinaryVideo(routine.videoPublicId);
-      }
-
-      nextVideoUrl = null;
-      nextVideoPublicId = null;
-      nextVideoType = "none";
-    }
-
-    await routine.update(
-      {
-        title,
-        objective: normalizeText(req.body.objective),
-        description: normalizeText(req.body.description),
-        level: allowedLevels.includes(req.body.level)
-          ? req.body.level
-          : routine.level,
-        category: allowedCategories.includes(req.body.category)
-          ? req.body.category
-          : routine.category,
-        durationWeeks: toPositiveInteger(req.body.durationWeeks, routine.durationWeeks),
-        daysPerWeek: toPositiveInteger(req.body.daysPerWeek, routine.daysPerWeek),
-        estimatedMinutes: toPositiveInteger(
-          req.body.estimatedMinutes,
-          routine.estimatedMinutes
-        ),
-
-        imageUrl: media.imageUrl || routine.imageUrl,
-        imagePublicId: media.imagePublicId || routine.imagePublicId,
-
-        videoUrl: nextVideoUrl,
-        videoPublicId: nextVideoPublicId,
-        videoType: nextVideoType,
-
-        status: allowedStatuses.includes(req.body.status)
-          ? req.body.status
-          : routine.status,
-      },
-      { transaction }
-    );
-
-    await RoutineExercise.destroy({
-      where: { routineId: routine.id },
-      transaction,
-    });
-
-    const exercises = parseExercises(req.body.exercises);
-
-    if (exercises.length) {
-      await RoutineExercise.bulkCreate(
-        exercises.map((exercise) => ({
-          ...exercise,
-          routineId: routine.id,
-        })),
-        { transaction }
-      );
-    }
-
-    await transaction.commit();
-
-    const fullRoutine = await Routine.findByPk(routine.id, {
-      include: routineInclude,
-    });
-
-    return res.json({
-      message: "Rutina actualizada correctamente",
-      routine: serializeRoutine(fullRoutine),
-    });
-  } catch (error) {
-    await transaction.rollback();
-    console.error("updateTrainerRoutine error:", error);
-    return res.status(500).json({ error: "No se pudo actualizar la rutina" });
-  }
-};
+export const createTrainerRoutine = saveRoutine(true);
+export const updateTrainerRoutine = saveRoutine(false);
 
 export const deleteTrainerRoutine = async (req, res) => {
   if (!ensureTrainer(req, res)) return;
-
-  const transaction = await sequelize.transaction();
-
   try {
-    const routine = await Routine.findOne({
-      where: {
-        id: req.params.id,
-        trainerId: getTrainerId(req),
-      },
-      transaction,
-    });
-
-    if (!routine) {
-      await transaction.rollback();
-      return res.status(404).json({ error: "Rutina no encontrada" });
-    }
-
-    if (routine.imagePublicId) {
-      await destroyCloudinaryImage(routine.imagePublicId);
-    }
-
-    if (routine.videoPublicId) {
-      await destroyCloudinaryVideo(routine.videoPublicId);
-    }
-
-    await RoutineExercise.destroy({
-      where: { routineId: routine.id },
-      transaction,
-    });
-
-    await routine.destroy({ transaction });
-
-    await transaction.commit();
-
-    return res.json({
-      message: "Rutina eliminada correctamente",
-    });
-  } catch (error) {
-    await transaction.rollback();
-    console.error("deleteTrainerRoutine error:", error);
-    return res.status(500).json({ error: "No se pudo eliminar la rutina" });
-  }
+    await removeTrainerRoutine({ routineId: req.params.id, trainerId: getTrainerId(req) });
+    return res.json({ message: "Rutina eliminada correctamente" });
+  } catch (error) { return mutationError(res, error); }
 };
 
-export const publishTrainerRoutine = async (req, res) => {
+const videoMutation = (action) => async (req, res) => {
   if (!ensureTrainer(req, res)) return;
-
   try {
-    const routine = await Routine.findOne({
-      where: {
-        id: req.params.id,
-        trainerId: getTrainerId(req),
-      },
-    });
-
-    if (!routine) {
-      return res.status(404).json({
-        error: "Rutina no encontrada",
-      });
-    }
-
-    await routine.update({
-      status: "pending_review",
-    });
-
-    const fullRoutine = await Routine.findByPk(routine.id, {
-      include: routineInclude,
-    });
-
-    return res.json({
-      message: "Rutina enviada a revisión del administrador",
-      routine: serializeRoutine(fullRoutine),
-    });
-  } catch (error) {
-    console.error("publishTrainerRoutine error:", error);
-    return res.status(500).json({
-      error: "No se pudo enviar la rutina a revisión",
-    });
-  }
+    const routine = await changeExerciseVideo({ routineId: req.params.id, exerciseId: req.params.exerciseId,
+      trainerId: getTrainerId(req), action, file: req.file, videoUrl: req.body?.videoUrl });
+    return res.json({ routine: serializeRoutine(routine) });
+  } catch (error) { return mutationError(res, error); }
 };
+export const uploadTrainerExerciseVideo = videoMutation("upload");
+export const setTrainerExerciseVideoUrl = videoMutation("url");
+export const deleteTrainerExerciseVideo = videoMutation("delete");
 
-export const archiveTrainerRoutine = async (req, res) => {
-  if (!ensureTrainer(req, res)) return;
-
+const changeStatus = (action, admin = false) => async (req, res) => {
+  if (admin) {
+    if (req.user?.role !== "administrador") return res.status(403).json({ error: "Acceso solo para administradores" });
+  } else if (!ensureTrainer(req, res)) return;
   try {
-    const routine = await Routine.findOne({
-      where: {
-        id: req.params.id,
-        trainerId: getTrainerId(req),
-      },
-    });
-
-    if (!routine) {
-      return res.status(404).json({ error: "Rutina no encontrada" });
-    }
-
-    await routine.update({ status: "archived" });
-
-    const fullRoutine = await Routine.findByPk(routine.id, {
-      include: routineInclude,
-    });
-
-    return res.json({
-      message: "Rutina archivada correctamente",
-      routine: serializeRoutine(fullRoutine),
-    });
-  } catch (error) {
-    console.error("archiveTrainerRoutine error:", error);
-    return res.status(500).json({ error: "No se pudo archivar la rutina" });
-  }
+    const routine = await transitionRoutine({ routineId: req.params.id,
+      trainerId: admin ? undefined : getTrainerId(req), action });
+    const messages = { publish: "Rutina enviada a revisión del administrador", archive: "Rutina archivada correctamente",
+      approve: "Rutina aprobada y publicada correctamente", reject: "Rutina rechazada correctamente" };
+    return res.json({ ok: true, message: messages[action], routine: serializeRoutine(routine) });
+  } catch (error) { return mutationError(res, error); }
 };
+export const publishTrainerRoutine = changeStatus("publish");
+export const archiveTrainerRoutine = changeStatus("archive");
+export const approveAdminRoutine = changeStatus("approve", true);
+export const rejectAdminRoutine = changeStatus("reject", true);
+export const archiveAdminRoutine = changeStatus("archive", true);
 
 export const publicTrainerRoutine = async (req, res) => {
   try {
@@ -688,108 +329,6 @@ export const listAdminRoutinesForReview = async (req, res) => {
     return res.status(500).json({
       ok: false,
       error: "No se pudieron cargar las rutinas para revisión",
-    });
-  }
-};
-
-export const approveAdminRoutine = async (req, res) => {
-  try {
-    const routine = await Routine.findByPk(req.params.id);
-
-    if (!routine) {
-      return res.status(404).json({
-        ok: false,
-        error: "Rutina no encontrada",
-      });
-    }
-
-    await routine.update({
-      status: "published",
-    });
-
-    const fullRoutine = await Routine.findByPk(routine.id, {
-      include: routineInclude,
-    });
-
-    return res.json({
-      ok: true,
-      message: "Rutina aprobada y publicada correctamente",
-      routine: serializeRoutine(fullRoutine),
-    });
-  } catch (error) {
-    console.error("approveAdminRoutine error:", error);
-
-    return res.status(500).json({
-      ok: false,
-      error: "No se pudo aprobar la rutina",
-    });
-  }
-};
-
-export const rejectAdminRoutine = async (req, res) => {
-  try {
-    const routine = await Routine.findByPk(req.params.id);
-
-    if (!routine) {
-      return res.status(404).json({
-        ok: false,
-        error: "Rutina no encontrada",
-      });
-    }
-
-    await routine.update({
-      status: "rejected",
-    });
-
-    const fullRoutine = await Routine.findByPk(routine.id, {
-      include: routineInclude,
-    });
-
-    return res.json({
-      ok: true,
-      message: "Rutina rechazada correctamente",
-      routine: serializeRoutine(fullRoutine),
-    });
-  } catch (error) {
-    console.error("rejectAdminRoutine error:", error);
-
-    return res.status(500).json({
-      ok: false,
-      error: "No se pudo rechazar la rutina",
-    });
-  }
-};
-
-export const archiveAdminRoutine = async (req, res) => {
-  try {
-    const routine = await Routine.findByPk(req.params.id);
-
-    if (!routine) {
-      return res.status(404).json({
-        ok: false,
-        error: "Rutina no encontrada",
-      });
-    }
-
-    await routine.update({
-      status: "archived",
-    });
-
-    const fullRoutine = await Routine.findByPk(routine.id, {
-      include: routineInclude,
-    });
-
-    return res.json({
-      ok: true,
-      message: "Rutina archivada correctamente",
-      routine: serializeRoutine(fullRoutine),
-    });
-  } catch (error) {
-    console.error("archiveAdminRoutine error:", error);
-
-    return res.status(500).json({
-      ok: false,
-      error: "No se pudo archivar la rutina",
     });
   }
 };

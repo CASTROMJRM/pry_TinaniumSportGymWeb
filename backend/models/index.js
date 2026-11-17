@@ -14,6 +14,7 @@ import { UserWeightHistory } from "./UserWeightHistory.js";
 import { UserCalorieHistory } from "./UserCalorieHistory.js";
 import { Routine } from "./Routine.js";
 import { RoutineExercise } from "./RoutineExercise.js";
+import { RoutineMediaCleanupJob } from "./RoutineMediaCleanupJob.js";
 import { TrainerProfile } from "./TrainerProfile.js";
 import { TrainerClient } from "./TrainerClient.js";
 import { TrainerAgendaItem } from "./TrainerAgendaItem.js";
@@ -952,6 +953,7 @@ GymAccessLog.belongsTo(User, { foreignKey: "scannedBy", as: "scanner", onDelete:
 GymAccessLog.belongsTo(UserSubscription, { foreignKey: "subscriptionId", as: "subscription", onDelete: "RESTRICT" });
 
 export {
+  RoutineMediaCleanupJob,
   UserPersonalData, PrivacyConsent, PrivacyPreference, PrivacyPreferenceEvent,
   ReauthenticationChallenge, ReauthenticationProof, AccountCancellationRequest,
   AccessQrToken,
