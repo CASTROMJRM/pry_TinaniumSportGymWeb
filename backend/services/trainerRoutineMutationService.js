@@ -142,6 +142,38 @@ async function syncExercises(routine, exercises, transaction) {
   }
 }
 
+async function routineReadiness(routineId, transaction) {
+  const exercises = await RoutineExercise.findAll({
+    where: { routineId }, order: [["dayNumber", "ASC"], ["order", "ASC"]],
+    transaction, lock: transaction.LOCK.UPDATE,
+  });
+  const exercisesWithoutVideo = exercises.flatMap((exercise) => {
+    let motivo;
+    if (!exercise.name?.trim()) motivo = "Ejercicio sin nombre";
+    else if (!Number.isInteger(Number(exercise.dayNumber)) || Number(exercise.dayNumber) < 1) motivo = "Dia invalido";
+    else if (!exercise.videoUrl || exercise.videoType === "none") motivo = "Sin video";
+    else if (!["upload", "youtube", "external", "drive"].includes(exercise.videoType)) motivo = "Tipo de video invalido";
+    else if (exercise.videoType === "upload" && !exercise.videoPublicId) motivo = "Video subido sin publicId";
+    else if (exercise.videoType !== "upload" && exercise.videoPublicId) motivo = "URL externa con publicId";
+    return motivo ? [{ id: exercise.id, exerciseId: exercise.id, name: exercise.name,
+      dayNumber: exercise.dayNumber, motivo }] : [];
+  });
+  return { hasExercises: exercises.length > 0, exercisesWithoutVideo,
+    isReady: exercises.length > 0 && exercisesWithoutVideo.length === 0 };
+}
+
+async function requireReadyForReview(routineId, transaction) {
+  const readiness = await routineReadiness(routineId, transaction);
+  if (!readiness.isReady) {
+    const message = readiness.hasExercises
+      ? "Todos los ejercicios deben tener un video antes de enviar la rutina a revision"
+      : "La rutina debe tener al menos un ejercicio antes de enviarse a revision";
+    throw Object.assign(routineError(message), {
+      details: { exercisesWithoutVideo: readiness.exercisesWithoutVideo },
+    });
+  }
+}
+
 function fullRoutine(id, transaction) {
   return Routine.findByPk(id, { include, transaction });
 }
@@ -161,6 +193,7 @@ export async function saveTrainerRoutine({ routineId, trainerId, body = {}, file
       const rows = await RoutineExercise.findAll({ where: { routineId: routine.id }, transaction });
       if (rows.some((row) => row.dayNumber > routine.daysPerWeek)) throw routineError("daysPerWeek deja ejercicios fuera de rango.");
     }
+    if (routine.status === "pending_review") await requireReadyForReview(routine.id, transaction);
     return fullRoutine(routine.id, transaction);
   }, [
     ...(files.image?.[0] ? [{ file: files.image[0], resourceType: "image" }] : []),
@@ -187,7 +220,9 @@ export async function changeExerciseVideo({ routineId, exerciseId, trainerId, ac
     } else if (action !== "delete") throw routineError("Operación de video inválida.");
     if (fields.videoPublicId !== exercise.videoPublicId) await queueRoutineMediaCleanup(exercise.videoPublicId, "video", transaction, exercise.videoUrl);
     await exercise.update(fields, { transaction });
-    await routine.update({ status }, { transaction });
+    const nextStatus = status === "pending_review" && !(await routineReadiness(routine.id, transaction)).isReady
+      ? "draft" : status;
+    await routine.update({ status: nextStatus }, { transaction });
     return fullRoutine(routine.id, transaction);
   }, action === "upload" ? [{ file, resourceType: "video" }] : []);
 }
@@ -219,6 +254,7 @@ export async function transitionRoutine({ routineId, trainerId, action }) {
     }
     const status = { publish: "pending_review", archive: "archived", approve: "published", reject: "rejected" }[action];
     if (!status) throw routineError("Transición inválida.");
+    if (["publish", "approve"].includes(action)) await requireReadyForReview(routine.id, transaction);
     await routine.update({ status }, { transaction });
     return fullRoutine(routine.id, transaction);
   });
