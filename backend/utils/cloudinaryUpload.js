@@ -27,13 +27,15 @@ export const uploadMediaBufferToCloudinary = (
   {
     folder = "titanium/routines",
     resourceType = "image",
+    publicId,
   } = {},
 ) =>
   new Promise((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream(
       {
-        folder,
+        ...(publicId ? { public_id: publicId } : { folder }),
         resource_type: resourceType,
+        ...(resourceType === "video" ? { allowed_formats: ["mp4", "webm", "mov"] } : {}),
       },
       (error, result) => {
         if (error) return reject(error);
@@ -46,12 +48,12 @@ export const uploadMediaBufferToCloudinary = (
 
 export const destroyCloudinaryImage = async (publicId) => {
   if (!publicId) return;
-  await cloudinary.uploader.destroy(publicId, { resource_type: "image" });
+  return cloudinary.uploader.destroy(publicId, { resource_type: "image", invalidate: true });
 };
 
 export const destroyCloudinaryVideo = async (publicId) => {
   if (!publicId) return;
-  await cloudinary.uploader.destroy(publicId, { resource_type: "video" });
+  return cloudinary.uploader.destroy(publicId, { resource_type: "video", invalidate: true });
 };
 
 export const deleteFromCloudinary = destroyCloudinaryImage;

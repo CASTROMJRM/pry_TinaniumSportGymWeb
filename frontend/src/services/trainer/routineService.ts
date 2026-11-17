@@ -7,7 +7,7 @@ export type RoutineStatus =
   | "archived"
   | "rejected";
 export type RoutineLevel = "principiante" | "intermedio" | "avanzado";
-export type ExerciseVideoType = "none" | "upload" | "youtube" | "external";
+export type ExerciseVideoType = "none" | "upload" | "youtube" | "external" | "drive";
 export type RoutineCategory =
   | "fuerza"
   | "hipertrofia"

@@ -72,7 +72,7 @@ export const RoutineExercise = sequelize.define(
       allowNull: false,
       defaultValue: "none",
       validate: {
-        isIn: [["none", "upload", "youtube", "external"]],
+        isIn: [["none", "upload", "youtube", "external", "drive"]],
       },
     },
   },

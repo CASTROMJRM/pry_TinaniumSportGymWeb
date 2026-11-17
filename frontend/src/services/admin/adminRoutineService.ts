@@ -1,6 +1,6 @@
 import { API } from "../../api/api";
 
-export type ExerciseVideoType = "none" | "upload" | "youtube" | "external";
+export type ExerciseVideoType = "none" | "upload" | "youtube" | "external" | "drive";
 
 export type RoutineExercise = {
   id: string;

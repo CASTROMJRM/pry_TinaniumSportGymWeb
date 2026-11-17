@@ -1,7 +1,8 @@
 import { Router } from "express";
 import { verifyToken, authorizeRole } from "../../middleware/authMiddleware.js";
 import { checkBlacklist } from "../../middleware/checkBlacklist.js";
-import { upload } from "../../middleware/uploadMemory.js";
+import { upload, uploadExerciseVideo } from "../../middleware/uploadMemory.js";
+import { isUuid } from "../../utils/routineValidation.js";
 
 import {
   listTrainerRoutines,
@@ -19,6 +20,14 @@ import {
 const router = Router();
 
 router.use(verifyToken, checkBlacklist, authorizeRole("entrenador"));
+for (const name of ["id", "exerciseId"]) router.param(name, (req, res, next, value) => {
+  if (!isUuid(value)) return res.status(400).json({ error: "UUID inválido." });
+  next();
+});
+
+router.post("/:id/exercises/:exerciseId/video", uploadExerciseVideo, uploadTrainerExerciseVideo);
+router.patch("/:id/exercises/:exerciseId/video-url", setTrainerExerciseVideoUrl);
+router.delete("/:id/exercises/:exerciseId/video", deleteTrainerExerciseVideo);
 
 router.get("/", listTrainerRoutines);
 
@@ -28,6 +37,7 @@ router.post(
   "/",
   upload.fields([
     { name: "image", maxCount: 1 },
+    { name: "video", maxCount: 1 },
   ]),
   createTrainerRoutine
 );
@@ -36,24 +46,9 @@ router.put(
   "/:id",
   upload.fields([
     { name: "image", maxCount: 1 },
+    { name: "video", maxCount: 1 },
   ]),
   updateTrainerRoutine
-);
-
-router.post(
-  "/:routineId/exercises/:exerciseId/video",
-  upload.single("video"),
-  uploadTrainerExerciseVideo
-);
-
-router.patch(
-  "/:routineId/exercises/:exerciseId/video-url",
-  setTrainerExerciseVideoUrl
-);
-
-router.delete(
-  "/:routineId/exercises/:exerciseId/video",
-  deleteTrainerExerciseVideo
 );
 
 router.delete("/:id", deleteTrainerRoutine);

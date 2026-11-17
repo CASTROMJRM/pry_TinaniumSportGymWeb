@@ -273,6 +273,11 @@ function normalizeProductItems(items) {
 }
 
 function normalizeCheckoutRequest(payload = {}) {
+  if (payload.client != null && !["web", "mobile"].includes(payload.client)) {
+    throw serviceError("client debe ser web o mobile.");
+  }
+  // Omit web to preserve equality with requests persisted before mobile support.
+  const client = payload.client === "mobile" ? { client: "mobile" } : {};
   const cartId = normalizeNullableString(payload.cartId);
   const membershipPlanId = normalizeNullableString(payload.membershipPlanId);
   const productItems = normalizeProductItems(payload.items || payload.cartItems);
@@ -291,6 +296,7 @@ function normalizeCheckoutRequest(payload = {}) {
   if (cartId) {
     return {
       source: "cart",
+      ...client,
       cartId,
       ...(payload.fulfillment ? { fulfillment: normalizeDeliveryInput(payload.fulfillment), quoteToken: normalizeRequiredString(payload.quoteToken, "quoteToken") } : {}),
     };
@@ -300,6 +306,7 @@ function normalizeCheckoutRequest(payload = {}) {
     if (payload.fulfillment || payload.quoteToken) throw serviceError("Las membresías no requieren entrega física.");
     return {
       source: "membership",
+      ...client,
       membershipPlanId,
       memberEmails: normalizeMemberEmails(payload.memberEmails),
     };
@@ -307,6 +314,7 @@ function normalizeCheckoutRequest(payload = {}) {
 
   return {
     source: "items",
+    ...client,
     items: productItems,
     ...(payload.fulfillment ? { fulfillment: normalizeDeliveryInput(payload.fulfillment), quoteToken: normalizeRequiredString(payload.quoteToken, "quoteToken") } : {}),
   };
@@ -602,11 +610,24 @@ function selectCheckoutUrl({ checkoutUrl, sandboxCheckoutUrl }) {
 }
 
 export function buildPreferenceBody({ order, payment }) {
-  const frontendUrl = getPublicUrl("FRONTEND_URL");
+  const mobile = payment.metadata?.checkoutRequest?.client === "mobile";
+  const frontendUrl = mobile ? null : getPublicUrl("FRONTEND_URL");
   const backendPublicUrl = getPublicUrl("BACKEND_PUBLIC_URL", {
     requireHttps: true,
   });
   const orderItems = order.get?.("items") || order.items || [];
+  let returnBase = `${frontendUrl}/pago/resultado`;
+  if (mobile) {
+    const url = new URL(backendPublicUrl);
+    if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash) {
+      throw serviceError("BACKEND_PUBLIC_URL debe ser una URL HTTPS sin credenciales ni query.", 503);
+    }
+    const destination = payment.metadata.checkoutRequest.source === "membership" ? "memberships" : "cart";
+    returnBase = `${backendPublicUrl}/api/checkout/mercadopago/mobile-return/${destination}`;
+  }
+  const backUrl = (result) => mobile
+    ? `${returnBase}/${result}?orderId=${encodeURIComponent(order.id)}`
+    : `${returnBase}?orderId=${order.id}&result=${result}`;
 
   if (orderItems.length === 0) {
     throw serviceError("La orden no tiene items para checkout.");
@@ -641,9 +662,9 @@ export function buildPreferenceBody({ order, payment }) {
     external_reference: String(order.id),
     notification_url: `${backendPublicUrl}/api/webhooks/mercadopago`,
     back_urls: {
-      success: `${frontendUrl}/pago/resultado?orderId=${order.id}&result=success`,
-      pending: `${frontendUrl}/pago/resultado?orderId=${order.id}&result=pending`,
-      failure: `${frontendUrl}/pago/resultado?orderId=${order.id}&result=failure`,
+      success: backUrl("success"),
+      pending: backUrl("pending"),
+      failure: backUrl("failure"),
     },
     auto_return: "approved",
     metadata: {
