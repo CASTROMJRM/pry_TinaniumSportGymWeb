@@ -173,6 +173,7 @@ export default function TrainerRoutinesPage() {
       removeVideo: false,
       exercises: routine.exercises?.length
         ? routine.exercises.map((exercise, index) => ({
+            id: exercise.id,
             name: exercise.name || "",
             description: exercise.description || "",
             dayNumber: exercise.dayNumber || 1,

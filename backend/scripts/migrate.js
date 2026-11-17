@@ -69,6 +69,7 @@ async function runMigration(filename, direction) {
 
   if (!useTransaction) {
     await migration[direction](context);
+    await recordMigration(filename, direction);
     return;
   }
 
@@ -77,7 +78,18 @@ async function runMigration(filename, direction) {
       ...context,
       transaction,
     });
+    // Commit DDL and bookkeeping together for transactional migrations.
+    await recordMigration(filename, direction, transaction);
   });
+}
+
+async function recordMigration(filename, direction, transaction) {
+  const queryInterface = migrationSequelize.getQueryInterface();
+  if (direction === "up") {
+    await queryInterface.bulkInsert(metaTable, [{ name: filename, executedAt: new Date() }], { transaction });
+  } else {
+    await queryInterface.bulkDelete(metaTable, { name: filename }, { transaction });
+  }
 }
 
 async function status() {
@@ -116,12 +128,6 @@ async function up() {
   for (const file of pending) {
     console.log(`Aplicando ${file}`);
     await runMigration(file, "up");
-    await migrationSequelize.getQueryInterface().bulkInsert(metaTable, [
-      {
-        name: file,
-        executedAt: new Date(),
-      },
-    ]);
   }
 }
 
@@ -141,9 +147,6 @@ async function down() {
 
   console.log(`Revirtiendo ${last.name}`);
   await runMigration(last.name, "down");
-  await migrationSequelize.getQueryInterface().bulkDelete(metaTable, {
-    name: last.name,
-  });
 }
 
 async function main() {

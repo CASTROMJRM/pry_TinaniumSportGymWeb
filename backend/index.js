@@ -20,6 +20,7 @@ import backupRoutes from "./routes/admin/backupRoutes.js";
 import backupScheduleRoutes from "./routes/admin/backupScheduleRoutes.js";
 import { initializeBackupScheduler } from "./services/backupScheduler.js";
 import { initializeInventoryReservationScheduler } from "./services/inventoryReservationScheduler.js";
+import { initializeRoutineMediaCleanupScheduler } from "./services/routineMediaCleanupService.js";
 import publicCatalogRoutes from "./routes/public/catalog.routes.js";
 import adminAboutRoutes from "./routes/admin/about.routes.js";
 import publicAboutRoutes from "./routes/public/about.routes.js";
@@ -133,6 +134,7 @@ async function bootstrap() {
     await ensureDatabaseSchema();
     await initializeBackupScheduler();
     initializeInventoryReservationScheduler();
+    initializeRoutineMediaCleanupScheduler();
     console.log("✅ Scheduler de backups inicializado");
 
     app.listen(PORT, () => console.log(`🚀 Servidor en puerto ${PORT}`));
