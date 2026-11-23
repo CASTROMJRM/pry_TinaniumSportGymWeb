@@ -1,0 +1,82 @@
+name: 'PWA Titanium - pruebas y Lighthouse'
+
+on:
+  push:
+    branches:
+      - feature/pwa-titanium
+
+permissions:
+  contents: read
+
+jobs:
+  pruebas:
+    name: 'Calidad, unitarias e integración offline'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Obtener la rama de la PWA
+        uses: actions/checkout@v4
+      - name: Preparar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Instalar dependencias sin modificar package-lock.json
+        run: npm ci
+      - name: Análisis estático ESLint
+        run: npm run lint
+      - name: Pruebas unitarias de rutas públicas
+        run: node --experimental-strip-types --test tests/unit/*.test.mjs
+      - name: Compilar PWA de producción
+        run: npm run build
+      - name: Instalar Chromium para Playwright
+        run: npx playwright install --with-deps chromium
+      - name: Integración y funcionamiento offline
+        run: npm run test:pwa
+      - name: Guardar capturas y trazas de Playwright
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pwa-pruebas-playwright
+          path: |
+            frontend/test-results/
+            frontend/playwright-report/
+          if-no-files-found: warn
+          retention-days: 14
+
+  lighthouse:
+    name: 'Auditoría Google Lighthouse'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Obtener la rama de la PWA
+        uses: actions/checkout@v4
+      - name: Preparar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Instalar dependencias
+        run: npm ci
+      - name: Generar build de producción
+        run: npm run build
+      - name: Generar reportes Lighthouse HTML y JSON
+        run: npx --yes @lhci/cli@0.15.1 autorun --config=./lighthouserc.cjs
+      - name: Guardar los reportes Lighthouse
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pwa-reportes-lighthouse
+          path: |
+            frontend/lighthouse-reports/
+            frontend/.lighthouseci/
+          if-no-files-found: warn
+          retention-days: 14
