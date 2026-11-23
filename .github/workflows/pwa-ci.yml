@@ -37,16 +37,6 @@ jobs:
         run: npx playwright install --with-deps chromium
       - name: Integración y funcionamiento offline
         run: npm run test:pwa
-      - name: Guardar capturas y trazas de Playwright
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: pwa-pruebas-playwright
-          path: |
-            frontend/test-results/
-            frontend/playwright-report/
-          if-no-files-found: warn
-          retention-days: 14
 
   lighthouse:
     name: 'Auditoría Google Lighthouse'
@@ -68,15 +58,40 @@ jobs:
         run: npm ci
       - name: Generar build de producción
         run: npm run build
-      - name: Generar reportes Lighthouse HTML y JSON
+      - name: Generar reportes Lighthouse HTML y JSON temporalmente
         run: npx --yes @lhci/cli@0.15.1 autorun --config=./lighthouserc.cjs
-      - name: Guardar los reportes Lighthouse
+      - name: Mostrar puntuaciones Lighthouse sin subir artefactos
         if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: pwa-reportes-lighthouse
-          path: |
-            frontend/lighthouse-reports/
-            frontend/.lighthouseci/
-          if-no-files-found: warn
-          retention-days: 14
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const directory = path.join(process.cwd(), 'lighthouse-reports');
+          if (!fs.existsSync(directory)) {
+            console.log('No hay reportes Lighthouse disponibles.');
+            process.exit(0);
+          }
+          const files = fs.readdirSync(directory).filter((file) => file.endsWith('.report.json'));
+          const rows = files.map((file) => {
+            const report = JSON.parse(fs.readFileSync(path.join(directory, file), 'utf8'));
+            const url = new URL(report.finalUrl || report.requestedUrl).pathname;
+            const percentage = (category) => {
+              const score = report.categories?.[category]?.score;
+              return typeof score === 'number' ? Math.round(score * 100) : 'N/D';
+            };
+            return `| ${url} | ${percentage('performance')} | ${percentage('accessibility')} | ${percentage('best-practices')} | ${percentage('seo')} |`;
+          });
+          const lines = [
+            '## Google Lighthouse (build local)',
+            '',
+            '| Ruta | Rendimiento | Accesibilidad | Buenas prácticas | SEO |',
+            '| --- | ---: | ---: | ---: | ---: |',
+            ...(rows.length ? rows : ['| Sin reportes | — | — | — | — |']),
+            '',
+            'Escala de 0 a 100. Auditoría local de la compilación; no evalúa el despliegue en Vercel.',
+          ];
+          console.log(lines.join('\n'));
+          if (process.env.GITHUB_STEP_SUMMARY) {
+            fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join('\n') + '\n');
+          }
+          NODE
